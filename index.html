@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Google Authenticator 迁移二维码合并器</title>
+<title>Google Authenticator 二维码合并器</title>
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;margin:0;background:#f5f5f7;color:#111}
 .wrap{max-width:720px;margin:auto;padding:20px 14px 50px}
 .card{background:#fff;border-radius:18px;padding:18px;margin-bottom:16px;box-shadow:0 8px 28px rgba(0,0,0,.07)}
-h1{font-size:25px;margin:0 0 10px} p{line-height:1.55}.muted{color:#666;font-size:14px}
+h1{font-size:25px;margin:0 0 10px}p{line-height:1.55}.muted{color:#666;font-size:14px}
 .warn{background:#fff7e6;border:1px solid #ffd591;color:#754800;border-radius:12px;padding:12px;font-size:14px}
-input{width:100%;margin:14px 0} button{width:100%;padding:14px;border:0;border-radius:14px;background:#0a84ff;color:#fff;font-size:17px;font-weight:700}
+input{width:100%;margin:14px 0}button{width:100%;padding:14px;border:0;border-radius:14px;background:#0a84ff;color:#fff;font-size:17px;font-weight:700}
 #status{white-space:pre-wrap;margin-top:12px}.ok{color:#16803a;font-weight:700}.err{color:#c62828;font-weight:700}
 #qrwrap{display:none;text-align:center}canvas.out{max-width:100%;height:auto;image-rendering:pixelated}
 @media(prefers-color-scheme:dark){body{background:#111214;color:#f5f5f7}.card{background:#1c1c1e}.muted{color:#aaa}.warn{background:#332600;border-color:#8d6b00;color:#ffd978}}
@@ -20,12 +20,13 @@ input{width:100%;margin:14px 0} button{width:100%;padding:14px;border:0;border-r
 <div class="wrap">
 <div class="card">
 <h1>Google Authenticator 二维码合并器</h1>
-<p>一次选择同一批导出的 2～10 张二维码截图。所有处理都在浏览器本地完成。</p>
+<p>选择同一批导出的多张迁移二维码截图，页面会在本机浏览器中识别并合并。</p>
 <div class="warn">二维码包含你的 2FA 密钥。不要把原图或合并后的二维码发给别人。</div>
 <input id="files" type="file" accept="image/*" multiple>
 <button id="merge">识别并合并</button>
-<div id="status" class="muted">新版识别器：iPhone Safari 多轮扫描。</div>
+<div id="status" class="muted">ZXing 识别版</div>
 </div>
+
 <div class="card" id="qrwrap">
 <h1 style="font-size:21px">合并后的二维码</h1>
 <div id="qrcode"></div>
@@ -34,91 +35,192 @@ input{width:100%;margin:14px 0} button{width:100%;padding:14px;border:0;border-r
 </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script src="https://unpkg.com/@zxing/browser@0.2.1/umd/zxing-browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
 <script>
 const $=s=>document.querySelector(s), st=$('#status');
 function log(s,c='muted'){st.className=c;st.textContent=s}
 
-function readFileAsDataURL(file){
- return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=()=>rej(new Error('读取图片失败'));r.readAsDataURL(file)})
+function fileToDataURL(file){
+ return new Promise((resolve,reject)=>{
+  const r=new FileReader();
+  r.onload=()=>resolve(r.result);
+  r.onerror=()=>reject(new Error('读取图片失败'));
+  r.readAsDataURL(file);
+ });
 }
 function loadImage(src){
- return new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=()=>rej(new Error('图片格式无法打开'));i.src=src})
+ return new Promise((resolve,reject)=>{
+  const img=new Image();
+  img.onload=()=>resolve(img);
+  img.onerror=()=>reject(new Error('图片无法打开'));
+  img.src=src;
+ });
 }
-function getImageData(img,maxSide=1800,mode='normal'){
- const scale=Math.min(1,maxSide/Math.max(img.naturalWidth,img.naturalHeight));
- const w=Math.max(1,Math.round(img.naturalWidth*scale)),h=Math.max(1,Math.round(img.naturalHeight*scale));
- const c=document.createElement('canvas');c.width=w;c.height=h;
- const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(img,0,0,w,h);
- let d=x.getImageData(0,0,w,h);
+function canvasVariant(img, maxSide=2200, crop=0, mode='normal'){
+ const sw=img.naturalWidth, sh=img.naturalHeight;
+ const scale=Math.min(1,maxSide/Math.max(sw,sh));
+ const w=Math.max(1,Math.round(sw*scale)), h=Math.max(1,Math.round(sh*scale));
+ const c=document.createElement('canvas');
+ c.width=w;c.height=h;
+ const ctx=c.getContext('2d',{willReadFrequently:true});
+ ctx.drawImage(img,0,0,w,h);
  if(mode!=='normal'){
-  const a=d.data;
-  for(let i=0;i<a.length;i+=4){
-   let y=.299*a[i]+.587*a[i+1]+.114*a[i+2];
-   if(mode==='contrast') y=Math.max(0,Math.min(255,(y-128)*1.8+128));
-   if(mode==='bw') y=y>145?255:0;
-   a[i]=a[i+1]=a[i+2]=y;
-  }
+   const d=ctx.getImageData(0,0,w,h),a=d.data;
+   for(let i=0;i<a.length;i+=4){
+     let y=.299*a[i]+.587*a[i+1]+.114*a[i+2];
+     if(mode==='contrast') y=Math.max(0,Math.min(255,(y-128)*2+128));
+     if(mode==='bw') y=y>140?255:0;
+     a[i]=a[i+1]=a[i+2]=y;
+   }
+   ctx.putImageData(d,0,0);
  }
- return d;
+ if(crop>0){
+   const cw=Math.floor(w*(1-crop*2)), ch=Math.floor(h*(1-crop*2));
+   const cc=document.createElement('canvas');
+   cc.width=cw;cc.height=ch;
+   cc.getContext('2d').drawImage(c,Math.floor(w*crop),Math.floor(h*crop),cw,ch,0,0,cw,ch);
+   return cc;
+ }
+ return c;
 }
-async function decodeImage(file){
- const src=await readFileAsDataURL(file),img=await loadImage(src);
- const passes=[
-  [2400,'normal'],[1800,'normal'],[1200,'normal'],
-  [1800,'contrast'],[1200,'contrast'],[1800,'bw'],[1200,'bw']
+
+async function decodeWithZXing(file){
+ if(!window.ZXingBrowser) throw new Error('ZXing 库加载失败，请确认网页联网后刷新');
+ const reader=new ZXingBrowser.BrowserQRCodeReader();
+ const src=await fileToDataURL(file);
+ const img=await loadImage(src);
+
+ const variants=[
+   [2600,0,'normal'],
+   [2200,0,'normal'],
+   [1800,0,'normal'],
+   [2200,0.08,'normal'],
+   [1800,0.10,'normal'],
+   [2200,0,'contrast'],
+   [1800,0,'contrast'],
+   [1800,0,'bw']
  ];
- for(const [side,mode] of passes){
-   const d=getImageData(img,side,mode);
-   const q=jsQR(d.data,d.width,d.height,{inversionAttempts:'attemptBoth'});
-   if(q && q.data) return q.data;
+
+ let lastErr=null;
+ for(const [side,crop,mode] of variants){
+   try{
+     const c=canvasVariant(img,side,crop,mode);
+     const result=await reader.decodeFromCanvas(c);
+     if(result){
+       const txt=result.getText ? result.getText() : String(result.text || result);
+       if(txt) return txt;
+     }
+   }catch(e){ lastErr=e; }
  }
- throw new Error('无法识别 '+file.name+'。请尽量使用“只包含二维码”的截图，别让二维码太小。');
+ throw new Error('无法识别 '+(file.name||'图片')+'。请把二维码裁得更大一些再试。');
 }
 
 function rv(b,p){let v=0,s=0;for(;p<b.length;){const x=b[p++];v+=(x&127)*2**s;if(!(x&128))return[v,p];s+=7}throw Error('protobuf 截断')}
 function ev(n){let a=[];while(n>=128){a.push((n&127)|128);n=Math.floor(n/128)}a.push(n);return a}
+
 function parse(b){
  let p=0,o=[],version=1,batchSize=null,batchIndex=null,batchId=null;
  while(p<b.length){
   let k;[k,p]=rv(b,p);const f=k>>3,w=k&7;
-  if(w===2){let l;[l,p]=rv(b,p);let e=p+l;if(e>b.length)throw Error('protobuf 截断');let ch=b.slice(p,e);if(f===1)o.push(ch);p=e}
-  else if(w===0){let v;[v,p]=rv(b,p);if(f===2)version=v;else if(f===3)batchSize=v;else if(f===4)batchIndex=v;else if(f===5)batchId=v}
-  else if(w===1)p+=8; else if(w===5)p+=4; else throw Error('不支持的 protobuf 格式')
+  if(w===2){
+   let l;[l,p]=rv(b,p);let e=p+l;
+   if(e>b.length)throw Error('protobuf 截断');
+   let ch=b.slice(p,e);if(f===1)o.push(ch);p=e;
+  }else if(w===0){
+   let v;[v,p]=rv(b,p);
+   if(f===2)version=v;else if(f===3)batchSize=v;else if(f===4)batchIndex=v;else if(f===5)batchId=v;
+  }else if(w===1)p+=8;
+  else if(w===5)p+=4;
+  else throw Error('不支持的 protobuf 格式');
  }
- return{otpParams:o,version,batchSize,batchIndex,batchId}
+ return{otpParams:o,version,batchSize,batchIndex,batchId};
 }
-function b64b(s){s=s.replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';const x=atob(s);return Uint8Array.from(x,c=>c.charCodeAt(0))}
-function b64e(b){let s='';for(let i=0;i<b.length;i+=32768)s+=String.fromCharCode(...b.subarray(i,i+32768));return btoa(s)}
+function b64b(s){
+ s=s.replace(/-/g,'+').replace(/_/g,'/');
+ while(s.length%4)s+='=';
+ const x=atob(s);
+ return Uint8Array.from(x,c=>c.charCodeAt(0));
+}
+function b64e(b){
+ let s='';
+ for(let i=0;i<b.length;i+=32768)s+=String.fromCharCode(...b.subarray(i,i+32768));
+ return btoa(s);
+}
 function fromURI(t){
- if(!t.startsWith('otpauth-migration://offline?')) throw Error('这张图不是 Google Authenticator 迁移二维码');
- const u=new URL(t),d=u.searchParams.get('data');if(!d)throw Error('二维码缺少 data 参数');
- return parse(b64b(decodeURIComponent(d)))
+ if(!t.startsWith('otpauth-migration://offline?')) throw Error('识别到的不是 Google Authenticator 迁移二维码');
+ const u=new URL(t);
+ const d=u.searchParams.get('data');
+ if(!d)throw Error('二维码缺少 data 参数');
+ return parse(b64b(decodeURIComponent(d)));
 }
 function build(all,v=1,id=1){
- let a=[];for(const m of all){a.push(...ev(10),...ev(m.length),...m)}
+ let a=[];
+ for(const m of all){a.push(...ev(10),...ev(m.length),...m)}
  a.push(...ev(16),...ev(v),...ev(24),...ev(1),...ev(32),...ev(0),...ev(40),...ev(id||1));
- return new Uint8Array(a)
+ return new Uint8Array(a);
 }
 
 $('#merge').onclick=async()=>{
  try{
-  const fs=[...$('#files').files];if(fs.length<2)throw Error('请至少选择 2 张二维码截图');
+  const fs=[...$('#files').files];
+  if(fs.length<2)throw Error('请至少选择 2 张二维码截图');
   const parts=[];
-  for(let i=0;i<fs.length;i++){log(`正在识别第 ${i+1}/${fs.length} 张…`);parts.push(fromURI(await decodeImage(fs[i])))}
+  for(let i=0;i<fs.length;i++){
+    log(`ZXing 正在识别第 ${i+1}/${fs.length} 张…`);
+    const txt=await decodeWithZXing(fs[i]);
+    parts.push(fromURI(txt));
+  }
+
   const ids=parts.map(x=>x.batchId).filter(x=>x!=null);
   if(ids.length&&!ids.every(x=>x===ids[0]))throw Error('这些二维码不是同一批导出');
+
   if(parts.every(x=>x.batchIndex!=null))parts.sort((a,b)=>a.batchIndex-b.batchIndex);
-  const all=parts.flatMap(x=>x.otpParams);if(!all.length)throw Error('没有找到账号数据');
-  const uri='otpauth-migration://offline?data='+encodeURIComponent(b64e(build(all,parts[0].version||1,ids[0]||1)));
-  $('#qrcode').innerHTML='';const c=document.createElement('canvas');c.className='out';$('#qrcode').appendChild(c);
-  await QRCode.toCanvas(c,uri,{errorCorrectionLevel:'L',margin:4,width:1000});
-  window.outCanvas=c;$('#info').textContent=`已合并 ${all.length} 个账号。请先测试扫描成功，再处理旧二维码。`;
-  $('#qrwrap').style.display='block';log(`完成：${fs.length} 张，${all.length} 个账号。`,'ok')
- }catch(e){$('#qrwrap').style.display='none';log('失败：'+(e.message||e),'err')}
+
+  const all=parts.flatMap(x=>x.otpParams);
+  if(!all.length)throw Error('没有找到账号数据');
+
+  const uri='otpauth-migration://offline?data='+encodeURIComponent(
+    b64e(build(all,parts[0].version||1,ids[0]||1))
+  );
+
+  $('#qrcode').innerHTML='';
+  const c=document.createElement('canvas');
+  c.className='out';
+  $('#qrcode').appendChild(c);
+
+  try{
+    await QRCode.toCanvas(c,uri,{errorCorrectionLevel:'L',margin:4,width:1000});
+  }catch(e){
+    throw Error('合并后的数据太大，单张二维码容量不够。');
+  }
+
+  window.outCanvas=c;
+  $('#info').textContent=`已合并 ${all.length} 个账号。请先用另一台设备测试扫描成功。`;
+  $('#qrwrap').style.display='block';
+  log(`完成：${fs.length} 张，共 ${all.length} 个账号。`,'ok');
+ }catch(e){
+  $('#qrwrap').style.display='none';
+  log('失败：'+(e.message||e),'err');
+ }
 };
-$('#save').onclick=()=>{const c=window.outCanvas;if(!c)return;c.toBlob(async b=>{const f=new File([b],'google-authenticator-merged.png',{type:'image/png'});try{if(navigator.share&&navigator.canShare&&navigator.canShare({files:[f]}))await navigator.share({files:[f]});else{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=f.name;a.click()}}catch(e){}},'image/png')};
+
+$('#save').onclick=()=>{
+ const c=window.outCanvas;if(!c)return;
+ c.toBlob(async b=>{
+   const f=new File([b],'google-authenticator-merged.png',{type:'image/png'});
+   try{
+     if(navigator.share&&navigator.canShare&&navigator.canShare({files:[f]})){
+       await navigator.share({files:[f]});
+     }else{
+       const a=document.createElement('a');
+       a.href=URL.createObjectURL(b);
+       a.download=f.name;
+       a.click();
+     }
+   }catch(e){}
+ },'image/png');
+};
 </script>
 </body>
 </html>
